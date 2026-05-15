@@ -32,12 +32,19 @@ def batch_resize_images(input_dir: str, output_dir: str, width: int, height: int
     return processed, skipped, errors
 
 
-def add_text_watermark(image: np.ndarray, text: str, opacity: float, scale: float, position: str) -> np.ndarray:
+def add_text_watermark(
+    image: np.ndarray, 
+    text: str, 
+    opacity: float, 
+    scale: float, 
+    position: str,
+    color: tuple[int, int, int] = (255, 255, 255),
+    font_type: int = cv2.FONT_HERSHEY_SIMPLEX
+) -> np.ndarray:
     overlay = image.copy()
     h, w = image.shape[:2]
-    font = cv2.FONT_HERSHEY_SIMPLEX
     thickness = max(1, int(scale * 2))
-    text_size, baseline = cv2.getTextSize(text, font, scale, thickness)
+    text_size, baseline = cv2.getTextSize(text, font_type, scale, thickness)
     tw, th = text_size
     margin = 20
 
@@ -52,15 +59,22 @@ def add_text_watermark(image: np.ndarray, text: str, opacity: float, scale: floa
     else:
         x, y = w - tw - margin, h - margin
 
-    cv2.putText(overlay, text, (x, y), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
+    cv2.putText(overlay, text, (x, y), font_type, scale, color, thickness, cv2.LINE_AA)
     if baseline > 0:
-        cv2.putText(overlay, text, (x, y), font, scale, (0, 0, 0), 1, cv2.LINE_AA)
+        cv2.putText(overlay, text, (x, y), font_type, scale, (0, 0, 0), 1, cv2.LINE_AA)
 
     return cv2.addWeighted(overlay, opacity, image, 1 - opacity, 0)
 
 
 def batch_watermark_images(
-    input_dir: str, output_dir: str, text: str, opacity: float, scale: float, position: str
+    input_dir: str, 
+    output_dir: str, 
+    text: str, 
+    opacity: float, 
+    scale: float, 
+    position: str,
+    color: tuple[int, int, int] = (255, 255, 255),
+    font_type: int = cv2.FONT_HERSHEY_SIMPLEX
 ) -> tuple[int, int, list[str]]:
     os.makedirs(output_dir, exist_ok=True)
     processed = 0
@@ -75,7 +89,7 @@ def batch_watermark_images(
 
         try:
             img = read_image(src)
-            watermarked = add_text_watermark(img, text, opacity, scale, position)
+            watermarked = add_text_watermark(img, text, opacity, scale, position, color, font_type)
             dst = os.path.join(output_dir, file_name)
             write_image(dst, watermarked)
             processed += 1

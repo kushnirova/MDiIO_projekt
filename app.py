@@ -1,10 +1,13 @@
-import tkinter as tk
+import ttkbootstrap as ttk
+from ttkbootstrap.constants import *
 
 from gui import ImageApp
 
 
 def main() -> None:
-    root = tk.Tk()
+    root = ttk.Window(themename="superhero")
+    root.title("OpenCV - Projekt")
+    root.geometry("1400x850")
     ImageApp(root)
     root.mainloop()
 
