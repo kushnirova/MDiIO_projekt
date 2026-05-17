@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Callable
 
 import cv2
 import numpy as np
@@ -7,7 +8,12 @@ import numpy as np
 from io_utils import SUPPORTED_EXTENSIONS, read_image, write_image
 
 
-def batch_resize_images(input_dir: str, output_dir: str, width: int, height: int) -> tuple[int, int, list[str]]:
+def _batch_process_images(
+    input_dir: str,
+    output_dir: str,
+    processor: Callable[[np.ndarray], np.ndarray],
+) -> tuple[int, int, list[str]]:
+    """Generic batch image processor."""
     os.makedirs(output_dir, exist_ok=True)
     processed = 0
     skipped = 0
@@ -21,15 +27,22 @@ def batch_resize_images(input_dir: str, output_dir: str, width: int, height: int
 
         try:
             img = read_image(src)
-            resized = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
+            result = processor(img)
             dst = os.path.join(output_dir, file_name)
-            write_image(dst, resized)
+            write_image(dst, result)
             processed += 1
         except (OSError, ValueError, cv2.error) as exc:
             skipped += 1
             errors.append(f"{file_name}: {exc}")
 
     return processed, skipped, errors
+
+
+def batch_resize_images(input_dir: str, output_dir: str, width: int, height: int) -> tuple[int, int, list[str]]:
+    def resize(img: np.ndarray) -> np.ndarray:
+        return cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
+
+    return _batch_process_images(input_dir, output_dir, resize)
 
 
 def add_text_watermark(
@@ -76,25 +89,8 @@ def batch_watermark_images(
     color: tuple[int, int, int] = (255, 255, 255),
     font_type: int = cv2.FONT_HERSHEY_SIMPLEX
 ) -> tuple[int, int, list[str]]:
-    os.makedirs(output_dir, exist_ok=True)
-    processed = 0
-    skipped = 0
-    errors: list[str] = []
+    def watermark(img: np.ndarray) -> np.ndarray:
+        return add_text_watermark(img, text, opacity, scale, position, color, font_type)
 
-    for file_name in os.listdir(input_dir):
-        src = os.path.join(input_dir, file_name)
-        if not os.path.isfile(src) or Path(src).suffix.lower() not in SUPPORTED_EXTENSIONS:
-            skipped += 1
-            continue
+    return _batch_process_images(input_dir, output_dir, watermark)
 
-        try:
-            img = read_image(src)
-            watermarked = add_text_watermark(img, text, opacity, scale, position, color, font_type)
-            dst = os.path.join(output_dir, file_name)
-            write_image(dst, watermarked)
-            processed += 1
-        except (OSError, ValueError, cv2.error) as exc:
-            skipped += 1
-            errors.append(f"{file_name}: {exc}")
-
-    return processed, skipped, errors

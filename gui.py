@@ -60,6 +60,10 @@ class ImageApp:
         self.edit_sharpness = tk.DoubleVar(value=0.0)
         self.edit_reference_image: np.ndarray | None = None
         self.edit_suppress_updates = False
+
+        # Magic constants
+        self.CROP_HANDLE_HIT_SIZE = 10
+        self.BLUR_FEATHER_SIGMA_RATIO = 0.35
         
         # Mapowanie fontów OpenCV
         self.FONTS = {
@@ -619,6 +623,14 @@ class ImageApp:
             return None
         return self.current_image
 
+    def _format_batch_result(self, processed: int, skipped: int, output_dir: str, errors: list[str]) -> str:
+        result = f"Przetworzono: {processed}\nPominięto: {skipped}\nFolder wyjściowy: {output_dir}"
+        if errors:
+            result += "\n\nBłędy:\n" + "\n".join(errors[:5])
+            if len(errors) > 5:
+                result += f"\n... oraz {len(errors) - 5} kolejnych."
+        return result
+
     def apply_edge_detection(self) -> None:
         image = self._ensure_current()
         if image is None:
@@ -626,7 +638,7 @@ class ImageApp:
 
         self.current_image = detect_edges(image, self.edge_choice.get())
         self.reset_crop_frame()
-        self._update_preview(self.current_image)
+        self._redraw_preview()
 
     def apply_threshold(self) -> None:
         image = self._ensure_current()
@@ -635,7 +647,7 @@ class ImageApp:
 
         self.current_image = threshold_image(image, self.threshold_choice.get(), int(self.binary_threshold.get()))
         self.reset_crop_frame()
-        self._update_preview(self.current_image)
+        self._redraw_preview()
 
     def batch_resize(self) -> None:
         input_dir = self.resize_input_dir.get().strip()
@@ -651,11 +663,7 @@ class ImageApp:
             return
 
         processed, skipped, errors = batch_resize_images(input_dir, output_dir, width, height)
-        result = f"Przetworzono: {processed}\nPominięto: {skipped}\nFolder wyjściowy: {output_dir}"
-        if errors:
-            result += "\n\nBłędy:\n" + "\n".join(errors[:5])
-            if len(errors) > 5:
-                result += f"\n... oraz {len(errors) - 5} kolejnych."
+        result = self._format_batch_result(processed, skipped, output_dir, errors)
         messagebox.showinfo("Resize zakończony", result)
 
     def batch_watermark(self) -> None:
@@ -678,11 +686,7 @@ class ImageApp:
         processed, skipped, errors = batch_watermark_images(
             input_dir, output_dir, text, opacity, scale, position, color, font_type
         )
-        result = f"Przetworzono: {processed}\nPominięto: {skipped}\nFolder wyjściowy: {output_dir}"
-        if errors:
-            result += "\n\nBłędy:\n" + "\n".join(errors[:5])
-            if len(errors) > 5:
-                result += f"\n... oraz {len(errors) - 5} kolejnych."
+        result = self._format_batch_result(processed, skipped, output_dir, errors)
         messagebox.showinfo("Znak wodny zakończony", result)
 
     def apply_crop(self) -> None:
@@ -698,7 +702,7 @@ class ImageApp:
         self.current_image = image[y1:y2, x1:x2].copy()
         self.image_info.set(f"Przycięto obraz: {x1}, {y1}, {x2 - x1}, {y2 - y1}")
         self.reset_crop_frame()
-        self._update_preview(self.current_image)
+        self._redraw_preview()
 
     def reset_crop_frame(self) -> None:
         image = self.current_image
@@ -903,7 +907,7 @@ class ImageApp:
 
         mask = np.zeros((y2 - y1, x2 - x1), dtype=np.uint8)
         cv2.circle(mask, (image_x - x1, image_y - y1), radius, 255, -1)
-        feather_sigma = max(0.5, radius * 0.35)
+        feather_sigma = max(0.5, radius * self.BLUR_FEATHER_SIGMA_RATIO)
         mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=feather_sigma, sigmaY=feather_sigma)
         alpha = (mask.astype(np.float32) / 255.0)[:, :, None]
 
@@ -911,10 +915,6 @@ class ImageApp:
         self.current_image[y1:y2, x1:x2] = blended
         if redraw:
             self._redraw_preview()
-
-    def _update_preview(self, bgr_image: np.ndarray) -> None:
-        self.current_image = bgr_image
-        self._redraw_preview()
 
     def _redraw_preview(self) -> None:
         if not hasattr(self, "preview_canvas"):
@@ -1030,9 +1030,8 @@ class ImageApp:
             "sw": self._image_to_canvas_point(x1, y2),
             "se": self._image_to_canvas_point(x2, y2),
         }
-        hit_size = 10
         for name, (hx, hy) in handles.items():
-            if abs(canvas_x - hx) <= hit_size and abs(canvas_y - hy) <= hit_size:
+            if abs(canvas_x - hx) <= self.CROP_HANDLE_HIT_SIZE and abs(canvas_y - hy) <= self.CROP_HANDLE_HIT_SIZE:
                 return name
         return None
 
@@ -1247,7 +1246,7 @@ class ImageApp:
             volume_strength=float(self.ann_volume_strength.get()),
         )
         self.reset_crop_frame()
-        self._update_preview(self.current_image)
+        self._redraw_preview()
 
     def _start_edit_session(self, reset_sliders: bool = True) -> None:
         if self.current_image is None:
@@ -1281,7 +1280,7 @@ class ImageApp:
             brightness=float(self.edit_brightness.get()),
             sharpness=float(self.edit_sharpness.get()),
         )
-        self._update_preview(self.current_image)
+        self._redraw_preview()
 
     def reset_edit_sliders(self, apply_live: bool = True) -> None:
         self.edit_suppress_updates = True
