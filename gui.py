@@ -34,6 +34,9 @@ class ImageApp:
         self.crop_drag_handle: str | None = None
         self.crop_drag_start: tuple[int, int] | None = None
         self.crop_drag_rect: tuple[int, int, int, int] | None = None
+        self.blur_dragging: bool = False
+        self.blur_last_point: tuple[int, int] | None = None
+        self.blur_cursor_point: tuple[int, int] | None = None
         self.ann_model = build_ann_model()
         self.crop_ratios = {
             "Swobodne": None,
@@ -45,6 +48,8 @@ class ImageApp:
         }
         self.crop_ratio = tk.StringVar(value="Swobodne")
         self.active_tab = "edge"
+        self.blur_brush_size = tk.IntVar(value=45)
+        self.blur_strength = tk.IntVar(value=9)
         
         # Mapowanie fontów OpenCV
         self.FONTS = {
@@ -96,7 +101,9 @@ class ImageApp:
         tab_row1 = ttk.Frame(tab_header)
         tab_row1.pack(fill=tk.X, pady=(0, 4))
         tab_row2 = ttk.Frame(tab_header)
-        tab_row2.pack(fill=tk.X)
+        tab_row2.pack(fill=tk.X, pady=(0, 4))
+        tab_row3 = ttk.Frame(tab_header)
+        tab_row3.pack(fill=tk.X)
 
         tabs_area = ttk.Frame(left_panel)
         tabs_area.pack(fill=tk.BOTH, expand=True)
@@ -107,6 +114,7 @@ class ImageApp:
         batch_watermark_tab = ttk.Frame(tabs_area, padding=12)
         crop_tab = ttk.Frame(tabs_area, padding=12)
         ann_tab = ttk.Frame(tabs_area, padding=12)
+        blur_tab = ttk.Frame(tabs_area, padding=12)
 
         self._register_tab("edge", edge_tab, "🔍 Krawędzie", tab_row1)
         self._register_tab("threshold", threshold_tab, "⚫ Progowanie", tab_row1)
@@ -114,6 +122,7 @@ class ImageApp:
         self._register_tab("watermark", batch_watermark_tab, "💧 Watermark", tab_row2)
         self._register_tab("crop", crop_tab, "✂ Przycinanie", tab_row2)
         self._register_tab("ann", ann_tab, "🧠 Sieć NN", tab_row2)
+        self._register_tab("blur", blur_tab, "🫧 Blur", tab_row3)
 
         self._build_edge_tab(edge_tab)
         self._build_threshold_tab(threshold_tab)
@@ -121,6 +130,7 @@ class ImageApp:
         self._build_watermark_tab(batch_watermark_tab)
         self._build_crop_tab(crop_tab)
         self._build_ann_tab(ann_tab)
+        self._build_blur_tab(blur_tab)
 
         self._show_tab("edge")
 
@@ -131,6 +141,8 @@ class ImageApp:
         self.preview_canvas.bind("<ButtonPress-1>", self._on_preview_mouse_press)
         self.preview_canvas.bind("<B1-Motion>", self._on_preview_mouse_drag)
         self.preview_canvas.bind("<ButtonRelease-1>", self._on_preview_mouse_release)
+        self.preview_canvas.bind("<Motion>", self._on_preview_mouse_move)
+        self.preview_canvas.bind("<Leave>", self._on_preview_mouse_leave)
         self.preview_canvas.create_text(
             10,
             10,
@@ -163,11 +175,16 @@ class ImageApp:
         self.crop_drag_handle = None
         self.crop_drag_start = None
         self.crop_drag_rect = None
+        self.blur_dragging = False
+        self.blur_last_point = None
+        self.blur_cursor_point = None
         if hasattr(self, "preview_canvas"):
-            if tab_key != "crop":
-                self.preview_canvas.configure(cursor="arrow")
-            else:
+            if tab_key == "crop":
                 self.preview_canvas.configure(cursor="crosshair")
+            elif tab_key == "blur":
+                self.preview_canvas.configure(cursor="none")
+            else:
+                self.preview_canvas.configure(cursor="arrow")
             self._redraw_preview()
 
     def _build_edge_tab(self, parent: ttk.Frame) -> None:
@@ -389,6 +406,26 @@ class ImageApp:
         ttk.Scale(parent, from_=0.6, to=3.0, orient=tk.HORIZONTAL, variable=self.ann_volume_strength).pack(fill=tk.X, pady=(0, 12))
 
         ttk.Button(parent, text="▶ Przetwórz obraz", command=self.apply_neural_processing, bootstyle="success").pack(anchor=tk.W)
+
+    def _build_blur_tab(self, parent: ttk.Frame) -> None:
+        title = ttk.Label(parent, text="Rozmywanie pędzlem", font=("TkDefaultFont", 11, "bold"))
+        title.pack(anchor=tk.W, pady=(0, 8))
+
+        ttk.Label(
+            parent,
+            text=(
+                "Przeciągaj myszą po podglądzie, aby lokalnie rozmywać obraz. "
+                "Rozmiar pędzla i moc rozmycia możesz regulować suwakami."
+            ),
+            wraplength=360,
+            font=("TkDefaultFont", 9),
+        ).pack(anchor=tk.W, pady=(0, 12))
+
+        ttk.Label(parent, text="Rozmiar pędzla (5 - 200 px):", font=("TkDefaultFont", 9, "bold")).pack(anchor=tk.W, pady=(0, 4))
+        ttk.Scale(parent, from_=5, to=200, orient=tk.HORIZONTAL, variable=self.blur_brush_size).pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(parent, text="Moc rozmycia (1 - 40):", font=("TkDefaultFont", 9, "bold")).pack(anchor=tk.W, pady=(0, 4))
+        ttk.Scale(parent, from_=1, to=40, orient=tk.HORIZONTAL, variable=self.blur_strength).pack(fill=tk.X, pady=(0, 12))
 
     def _dir_picker(self, parent: ttk.Frame, label: str, variable: tk.StringVar) -> ttk.Frame:
         frame = ttk.Frame(parent)
@@ -628,11 +665,21 @@ class ImageApp:
         self._redraw_preview()
 
     def _on_preview_mouse_press(self, event: tk.Event) -> None:
-        if self.current_image is None or self.crop_rect is None:
+        if self.current_image is None:
             return
 
         image_point = self._canvas_to_image_point(event.x, event.y)
         if image_point is None:
+            return
+
+        if self.active_tab == "blur":
+            self.blur_dragging = True
+            self.blur_last_point = image_point
+            self.blur_cursor_point = image_point
+            self._paint_blur_at(*image_point)
+            return
+
+        if self.active_tab != "crop" or self.crop_rect is None:
             return
 
         handle = self._hit_test_crop_handle(event.x, event.y)
@@ -651,11 +698,22 @@ class ImageApp:
         self.crop_drag_rect = self.crop_rect
 
     def _on_preview_mouse_drag(self, event: tk.Event) -> None:
-        if self.current_image is None or self.crop_rect is None or self.crop_drag_mode is None:
+        if self.current_image is None:
             return
 
         image_point = self._canvas_to_image_point(event.x, event.y)
         if image_point is None:
+            return
+
+        if self.active_tab == "blur":
+            if self.blur_dragging:
+                self.blur_cursor_point = image_point
+                start = self.blur_last_point if self.blur_last_point is not None else image_point
+                self._paint_blur_line(start, image_point)
+                self.blur_last_point = image_point
+            return
+
+        if self.active_tab != "crop" or self.crop_rect is None or self.crop_drag_mode is None:
             return
 
         img_height, img_width = self.current_image.shape[:2]
@@ -678,10 +736,74 @@ class ImageApp:
                 self._redraw_preview()
 
     def _on_preview_mouse_release(self, event: tk.Event) -> None:
+        self.blur_dragging = False
+        self.blur_last_point = None
         self.crop_drag_mode = None
         self.crop_drag_handle = None
         self.crop_drag_start = None
         self.crop_drag_rect = None
+
+    def _on_preview_mouse_move(self, event: tk.Event) -> None:
+        if self.active_tab != "blur" or self.current_image is None:
+            return
+
+        image_point = self._canvas_to_image_point(event.x, event.y)
+        if image_point != self.blur_cursor_point:
+            self.blur_cursor_point = image_point
+            self._update_blur_brush_overlay()
+
+    def _on_preview_mouse_leave(self, event: tk.Event) -> None:
+        if self.blur_cursor_point is not None:
+            self.blur_cursor_point = None
+            if self.active_tab == "blur":
+                self._update_blur_brush_overlay()
+
+    def _paint_blur_line(self, start: tuple[int, int], end: tuple[int, int]) -> None:
+        x1, y1 = start
+        x2, y2 = end
+        distance = int(round(np.hypot(x2 - x1, y2 - y1)))
+        if distance <= 0:
+            self._paint_blur_at(x1, y1)
+            return
+
+        step = max(1, int(round(max(1, int(self.blur_brush_size.get())) / 4)))
+        for i in range(0, distance + 1, step):
+            t = i / distance
+            px = int(round(x1 + (x2 - x1) * t))
+            py = int(round(y1 + (y2 - y1) * t))
+            self._paint_blur_at(px, py, redraw=False)
+        self._paint_blur_at(x2, y2, redraw=False)
+        self._redraw_preview()
+
+    def _paint_blur_at(self, image_x: int, image_y: int, redraw: bool = True) -> None:
+        if self.current_image is None:
+            return
+
+        img_height, img_width = self.current_image.shape[:2]
+        radius = max(2, int(round(self.blur_brush_size.get() / 2)))
+        blur_strength = max(1, int(round(self.blur_strength.get())))
+        kernel_size = max(3, blur_strength * 2 + 1)
+
+        x1 = max(0, image_x - radius)
+        y1 = max(0, image_y - radius)
+        x2 = min(img_width, image_x + radius + 1)
+        y2 = min(img_height, image_y + radius + 1)
+        if x2 <= x1 or y2 <= y1:
+            return
+
+        roi = self.current_image[y1:y2, x1:x2]
+        blurred_roi = cv2.GaussianBlur(roi, (kernel_size, kernel_size), 0)
+
+        mask = np.zeros((y2 - y1, x2 - x1), dtype=np.uint8)
+        cv2.circle(mask, (image_x - x1, image_y - y1), radius, 255, -1)
+        feather_sigma = max(0.5, radius * 0.35)
+        mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=feather_sigma, sigmaY=feather_sigma)
+        alpha = (mask.astype(np.float32) / 255.0)[:, :, None]
+
+        blended = (roi.astype(np.float32) * (1.0 - alpha) + blurred_roi.astype(np.float32) * alpha).astype(np.uint8)
+        self.current_image[y1:y2, x1:x2] = blended
+        if redraw:
+            self._redraw_preview()
 
     def _update_preview(self, bgr_image: np.ndarray) -> None:
         self.current_image = bgr_image
@@ -721,6 +843,16 @@ class ImageApp:
 
         if self.crop_rect is not None and self.active_tab == "crop":
             self._draw_crop_overlay()
+        self._update_blur_brush_overlay()
+
+    def _update_blur_brush_overlay(self) -> None:
+        if not hasattr(self, "preview_canvas"):
+            return
+
+        self.preview_canvas.delete("blur_overlay")
+        if self.active_tab != "blur" or self.blur_cursor_point is None:
+            return
+        self._draw_blur_brush_overlay()
 
     def _draw_crop_overlay(self) -> None:
         if self.crop_rect is None:
@@ -743,6 +875,25 @@ class ImageApp:
                 fill="#00d1ff",
                 tags=("crop_overlay",),
             )
+
+    def _draw_blur_brush_overlay(self) -> None:
+        if self.blur_cursor_point is None:
+            return
+
+        image_x, image_y = self.blur_cursor_point
+        center_x, center_y = self._image_to_canvas_point(image_x, image_y)
+        radius_px = max(2, int(round(self.blur_brush_size.get() / 2)))
+        radius_canvas = max(2, int(round(radius_px * self.preview_scale)))
+
+        self.preview_canvas.create_oval(
+            center_x - radius_canvas,
+            center_y - radius_canvas,
+            center_x + radius_canvas,
+            center_y + radius_canvas,
+            outline="#000000",
+            width=2,
+            tags=("blur_overlay",),
+        )
 
     def _image_to_canvas_point(self, x: int, y: int) -> tuple[int, int]:
         return (
