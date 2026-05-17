@@ -42,6 +42,47 @@ def threshold_image(image: np.ndarray, algorithm: str, binary_threshold: int) ->
     return cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
 
 
+def apply_basic_edit(
+    image: np.ndarray,
+    saturation: float = 1.0,
+    contrast: float = 1.0,
+    exposure: float = 0.0,
+    tint: float = 0.0,
+    temperature: float = 0.0,
+    brightness: float = 0.0,
+    sharpness: float = 0.0,
+) -> np.ndarray:
+    out = image.astype(np.float32)
+
+    exposure_scale = float(np.power(2.0, exposure))
+    out *= exposure_scale
+    out = (out - 127.5) * float(contrast) + 127.5
+    out += float(brightness)
+    out = np.clip(out, 0.0, 255.0).astype(np.uint8)
+
+    hsv = cv2.cvtColor(out, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * float(saturation), 0.0, 255.0)
+    out = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    temp_shift = float(temperature) * 0.8
+    bgr = out.astype(np.float32)
+    bgr[:, :, 0] = np.clip(bgr[:, :, 0] - temp_shift, 0.0, 255.0)
+    bgr[:, :, 2] = np.clip(bgr[:, :, 2] + temp_shift, 0.0, 255.0)
+    out = bgr.astype(np.uint8)
+
+    tint_shift = float(tint) * 0.6
+    lab = cv2.cvtColor(out, cv2.COLOR_BGR2LAB).astype(np.float32)
+    lab[:, :, 1] = np.clip(lab[:, :, 1] + tint_shift, 0.0, 255.0)
+    out = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+
+    if sharpness > 0:
+        blur = cv2.GaussianBlur(out, (0, 0), sigmaX=1.2, sigmaY=1.2)
+        amount = float(sharpness)
+        out = cv2.addWeighted(out, 1.0 + amount, blur, -amount, 0)
+
+    return out
+
+
 def build_ann_model() -> dict:
     classifier = _build_face_pattern_classifier()
     return {"classifier": classifier}

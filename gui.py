@@ -10,6 +10,7 @@ from PIL import Image, ImageTk
 from batch_ops import batch_resize_images, batch_watermark_images
 from io_utils import read_image, write_image
 from processing import (
+    apply_basic_edit,
     apply_ann_processing,
     build_ann_model,
     detect_edges,
@@ -50,6 +51,15 @@ class ImageApp:
         self.active_tab = "edge"
         self.blur_brush_size = tk.IntVar(value=45)
         self.blur_strength = tk.IntVar(value=9)
+        self.edit_saturation = tk.DoubleVar(value=1.0)
+        self.edit_contrast = tk.DoubleVar(value=1.0)
+        self.edit_exposure = tk.DoubleVar(value=0.0)
+        self.edit_tint = tk.DoubleVar(value=0.0)
+        self.edit_temperature = tk.DoubleVar(value=0.0)
+        self.edit_brightness = tk.DoubleVar(value=0.0)
+        self.edit_sharpness = tk.DoubleVar(value=0.0)
+        self.edit_reference_image: np.ndarray | None = None
+        self.edit_suppress_updates = False
         
         # Mapowanie fontów OpenCV
         self.FONTS = {
@@ -114,6 +124,7 @@ class ImageApp:
         batch_watermark_tab = ttk.Frame(tabs_area, padding=12)
         crop_tab = ttk.Frame(tabs_area, padding=12)
         ann_tab = ttk.Frame(tabs_area, padding=12)
+        edit_tab = ttk.Frame(tabs_area, padding=12)
         blur_tab = ttk.Frame(tabs_area, padding=12)
 
         self._register_tab("edge", edge_tab, "🔍 Krawędzie", tab_row1)
@@ -122,6 +133,7 @@ class ImageApp:
         self._register_tab("watermark", batch_watermark_tab, "💧 Watermark", tab_row2)
         self._register_tab("crop", crop_tab, "✂ Przycinanie", tab_row2)
         self._register_tab("ann", ann_tab, "🧠 Sieć NN", tab_row2)
+        self._register_tab("edit", edit_tab, "🎚 Edycja", tab_row3)
         self._register_tab("blur", blur_tab, "🫧 Blur", tab_row3)
 
         self._build_edge_tab(edge_tab)
@@ -130,6 +142,7 @@ class ImageApp:
         self._build_watermark_tab(batch_watermark_tab)
         self._build_crop_tab(crop_tab)
         self._build_ann_tab(ann_tab)
+        self._build_edit_tab(edit_tab)
         self._build_blur_tab(blur_tab)
 
         self._show_tab("edge")
@@ -161,6 +174,7 @@ class ImageApp:
         self.tab_buttons[tab_key] = button
 
     def _show_tab(self, tab_key: str) -> None:
+        previous_tab = self.active_tab
         self.active_tab = tab_key
         for key, frame in self.tab_frames.items():
             if key == tab_key:
@@ -186,6 +200,11 @@ class ImageApp:
             else:
                 self.preview_canvas.configure(cursor="arrow")
             self._redraw_preview()
+
+        if tab_key == "edit":
+            self._start_edit_session(reset_sliders=previous_tab != "edit")
+        elif previous_tab == "edit":
+            self.edit_reference_image = None
 
     def _build_edge_tab(self, parent: ttk.Frame) -> None:
         title = ttk.Label(parent, text="Wykrywanie krawędzi", font=("TkDefaultFont", 11, "bold"))
@@ -426,6 +445,94 @@ class ImageApp:
 
         ttk.Label(parent, text="Moc rozmycia (1 - 40):", font=("TkDefaultFont", 9, "bold")).pack(anchor=tk.W, pady=(0, 4))
         ttk.Scale(parent, from_=1, to=40, orient=tk.HORIZONTAL, variable=self.blur_strength).pack(fill=tk.X, pady=(0, 12))
+
+    def _build_edit_tab(self, parent: ttk.Frame) -> None:
+        title = ttk.Label(parent, text="Edycja parametrów obrazu", font=("TkDefaultFont", 11, "bold"))
+        title.pack(anchor=tk.W, pady=(0, 8))
+
+        ttk.Label(
+            parent,
+            text=(
+                "Reguluj nasycenie, kontrast, ekspozycję, tint, temperaturę i inne parametry. "
+                "Zmiany zostaną nałożone na aktualny obraz po kliknięciu przycisku."
+            ),
+            wraplength=360,
+            font=("TkDefaultFont", 9),
+        ).pack(anchor=tk.W, pady=(0, 12))
+
+        ttk.Label(parent, text="Nasycenie (0.0 - 2.0):", font=("TkDefaultFont", 9, "bold")).pack(anchor=tk.W, pady=(0, 2))
+        ttk.Scale(
+            parent,
+            from_=0.0,
+            to=2.0,
+            orient=tk.HORIZONTAL,
+            variable=self.edit_saturation,
+            command=self._on_edit_slider_change,
+        ).pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(parent, text="Kontrast (0.5 - 2.0):", font=("TkDefaultFont", 9, "bold")).pack(anchor=tk.W, pady=(0, 2))
+        ttk.Scale(
+            parent,
+            from_=0.5,
+            to=2.0,
+            orient=tk.HORIZONTAL,
+            variable=self.edit_contrast,
+            command=self._on_edit_slider_change,
+        ).pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(parent, text="Ekspozycja (-2.0 - 2.0 EV):", font=("TkDefaultFont", 9, "bold")).pack(anchor=tk.W, pady=(0, 2))
+        ttk.Scale(
+            parent,
+            from_=-2.0,
+            to=2.0,
+            orient=tk.HORIZONTAL,
+            variable=self.edit_exposure,
+            command=self._on_edit_slider_change,
+        ).pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(parent, text="Tint (-100 - 100):", font=("TkDefaultFont", 9, "bold")).pack(anchor=tk.W, pady=(0, 2))
+        ttk.Scale(
+            parent,
+            from_=-100,
+            to=100,
+            orient=tk.HORIZONTAL,
+            variable=self.edit_tint,
+            command=self._on_edit_slider_change,
+        ).pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(parent, text="Temperatura (-100 - 100):", font=("TkDefaultFont", 9, "bold")).pack(anchor=tk.W, pady=(0, 2))
+        ttk.Scale(
+            parent,
+            from_=-100,
+            to=100,
+            orient=tk.HORIZONTAL,
+            variable=self.edit_temperature,
+            command=self._on_edit_slider_change,
+        ).pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(parent, text="Jasność (-100 - 100):", font=("TkDefaultFont", 9, "bold")).pack(anchor=tk.W, pady=(0, 2))
+        ttk.Scale(
+            parent,
+            from_=-100,
+            to=100,
+            orient=tk.HORIZONTAL,
+            variable=self.edit_brightness,
+            command=self._on_edit_slider_change,
+        ).pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(parent, text="Wyostrzenie (0.0 - 2.0):", font=("TkDefaultFont", 9, "bold")).pack(anchor=tk.W, pady=(0, 2))
+        ttk.Scale(
+            parent,
+            from_=0.0,
+            to=2.0,
+            orient=tk.HORIZONTAL,
+            variable=self.edit_sharpness,
+            command=self._on_edit_slider_change,
+        ).pack(fill=tk.X, pady=(0, 12))
+
+        buttons = ttk.Frame(parent)
+        buttons.pack(fill=tk.X)
+        ttk.Button(buttons, text="↺ Reset suwaków", command=self.reset_edit_sliders, bootstyle="secondary").pack(side=tk.LEFT)
 
     def _dir_picker(self, parent: ttk.Frame, label: str, variable: tk.StringVar) -> ttk.Frame:
         frame = ttk.Frame(parent)
@@ -1141,3 +1248,50 @@ class ImageApp:
         )
         self.reset_crop_frame()
         self._update_preview(self.current_image)
+
+    def _start_edit_session(self, reset_sliders: bool = True) -> None:
+        if self.current_image is None:
+            self.edit_reference_image = None
+            return
+
+        self.edit_reference_image = self.current_image.copy()
+        if reset_sliders:
+            self.reset_edit_sliders(apply_live=False)
+        self._apply_live_edit()
+
+    def _on_edit_slider_change(self, value: str) -> None:
+        del value
+        if self.edit_suppress_updates or self.active_tab != "edit":
+            return
+        self._apply_live_edit()
+
+    def _apply_live_edit(self) -> None:
+        if self.current_image is None:
+            return
+        if self.edit_reference_image is None:
+            self.edit_reference_image = self.current_image.copy()
+
+        self.current_image = apply_basic_edit(
+            self.edit_reference_image,
+            saturation=float(self.edit_saturation.get()),
+            contrast=float(self.edit_contrast.get()),
+            exposure=float(self.edit_exposure.get()),
+            tint=float(self.edit_tint.get()),
+            temperature=float(self.edit_temperature.get()),
+            brightness=float(self.edit_brightness.get()),
+            sharpness=float(self.edit_sharpness.get()),
+        )
+        self._update_preview(self.current_image)
+
+    def reset_edit_sliders(self, apply_live: bool = True) -> None:
+        self.edit_suppress_updates = True
+        self.edit_saturation.set(1.0)
+        self.edit_contrast.set(1.0)
+        self.edit_exposure.set(0.0)
+        self.edit_tint.set(0.0)
+        self.edit_temperature.set(0.0)
+        self.edit_brightness.set(0.0)
+        self.edit_sharpness.set(0.0)
+        self.edit_suppress_updates = False
+        if apply_live and self.active_tab == "edit":
+            self._apply_live_edit()
